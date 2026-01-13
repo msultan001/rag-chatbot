@@ -1,88 +1,96 @@
 import streamlit as st
-import os
 import sys
+import os
 
-# Add src to path so we can import modules
+# Add src to path so we can import RAGChatbot
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.rag_chatbot import RAGChatbot
 
-# Page config
-st.set_page_config(page_title="Financial Analyst RAG Chatbot", layout="wide")
+# Page configuration
+st.set_page_config(
+    page_title="CrediTrust - Financial Analyst Assistant",
+    page_icon="🤖",
+    layout="wide"
+)
 
-st.title("💸 CrediTrust: Financial Analyst Assistant")
-st.markdown("""
-Welcome to the CrediTrust Complaint Assistant. 
-Ask questions about customer complaints and I will look them up in our database to provide accurate answers.
-""")
-
-# Initialize the chatbot only once
+# Initialize RAG Chatbot
 @st.cache_resource
 def load_chatbot():
-    try:
-        return RAGChatbot(vector_store_path="vectorstore")
-    except Exception as e:
-        st.error(f"Failed to load chatbot: {e}. Check if the vector store exists.")
-        return None
+    return RAGChatbot()
 
 chatbot = load_chatbot()
 
-# Sidebar for controls
-with st.sidebar:
-    st.header("Controls")
-    if st.button("Clear Chat History"):
-        st.session_state.chat_history = []
-        st.rerun()
+# App styling
+st.markdown("""
+<style>
+    .main {
+        background-color: #f5f7f9;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 5px;
+        height: 3em;
+        background-color: #4CAF50;
+        color: white;
+    }
+    .clear-button>button {
+        background-color: #f44336;
+    }
+    .source-box {
+        background-color: #ffffff;
+        padding: 15px;
+        border-radius: 8px;
+        border-left: 5px solid #2196F3;
+        margin-bottom: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Maintain chat history
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+# Main UI
+st.title("🤖 CrediTrust RAG Assistant")
+st.subheader("Interactive Complaint Analysis")
 
-# Display chat history
-for chat in st.session_state.chat_history:
-    with st.chat_message(chat["role"]):
-        st.markdown(chat["content"])
-        if chat["role"] == "assistant" and "sources" in chat:
-            with st.expander("Source Chunks"):
-                for doc in chat["sources"]:
-                    st.write(f"- {doc.page_content}")
-                    st.write(f"  *Product: {doc.metadata.get('product')}*")
-                    st.divider()
+st.info("Greetings! I am your AI assistant specialized in analyzing financial complaints. Ask me anything about customer feedback or product issues.")
 
-# Input area
-if query := st.chat_input("Ask a question about financial complaints..."):
-    # Add user message to history
-    st.session_state.chat_history.append({"role": "user", "content": query})
-    with st.chat_message("user"):
-        st.markdown(query)
+# Layout: Two columns for input/actions
+col1, col2 = st.columns([4, 1])
 
-    if chatbot:
-        with st.spinner("Analyzing complaints..."):
-            try:
-                result = chatbot.ask(query)
-                answer = result["answer"]
-                sources = result["source_documents"]
-                
-                # Add assistant response to history
-                st.session_state.chat_history.append({
-                    "role": "assistant", 
-                    "content": answer,
-                    "sources": sources
-                })
-                
-                # Render response
-                with st.chat_message("assistant"):
-                    st.markdown(answer)
-                    with st.expander("Source Chunks"):
-                        for doc in sources:
-                            st.write(f"- {doc.page_content}")
-                            st.write(f"  *Product: {doc.metadata.get('product')}*")
-                            st.divider()
-            except Exception as e:
-                st.error(f"Error during query: {e}")
-    else:
-        st.warning("Chatbot is not loaded. Please ensure the vector store is built.")
+with col1:
+    user_input = st.text_input("Enter your question here:", placeholder="e.g., What are the main issues with credit cards?", key="query_input")
 
-# Footer
-st.divider()
-st.caption("Powered by RAG Pipeline | LangChain | FAISS | HuggingFace")
+with col2:
+    st.write("### Actions")
+    submit_btn = st.button("Submit")
+    clear_btn = st.button("Clear Chat", key="clear", help="Clear the current view")
+
+# Handle Clear Button
+if clear_btn:
+    st.session_state.query_input = ""
+    st.rerun()
+
+# Handle Submission
+if submit_btn and user_input:
+    with st.spinner("Analyzing complaints and generating an answer..."):
+        response = chatbot.ask(user_input)
+        
+        # Display Answer
+        st.markdown(f"### 💬 Answer")
+        st.write(response["answer"])
+
+        # Display Sources
+        if response["sources"]:
+            with st.expander("📚 View Source Snippets"):
+                for i, src in enumerate(response["sources"]):
+                    st.markdown(f"**Source {i+1}** (Product: {src['metadata'].get('product', 'N/A')})")
+                    st.markdown(f"<div class='source-box'>{src['content']}</div>", unsafe_allow_html=True)
+        else:
+            st.warning("No source snippets found for this query.")
+elif submit_btn and not user_input:
+    st.warning("Please enter a question first.")
+
+# Sidebar footer
+st.sidebar.markdown("---")
+st.sidebar.markdown("### About")
+st.sidebar.info("This RAG pipeline uses SentenceTransformers for embeddings, FAISS for retrieval, and DistilGPT2 for generation.")
+st.sidebar.markdown("© 2026 CrediTrust Intelligence")

@@ -1,17 +1,20 @@
-# Ignore Python cache
+# Python cache
 __pycache__/
 *.py[cod]
 
-# Ignore notebook checkpoints
+# Notebook checkpoints
 .ipynb_checkpoints/
 
-# Ignore data and vector store (not committed)
+# Data and large artifacts
 data/raw/
 vector_store/
+vectorstore/*.faiss
+vectorstore/*.pkl
 
 # Environment
 .env
 .venv/
+venv/
 
-#csv file
-*.csv
+# Local data (unless explicitly required)
+# data/*.csv

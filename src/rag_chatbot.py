@@ -1,54 +1,100 @@
+"""Core RAG Chatbot logic using LangChain and FAISS.
+
+This module provides the RAGChatbot class which:
+- Loads a FAISS vector store
+- Initializes a lightweight LLM (distilgpt2)
+- Sets up a RetrievalQA chain for answering user queries based on context.
+"""
+
 import os
-import pickle
-import numpy as np
-import faiss
-from typing import List, Dict, Any
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
+import logging
+from typing import Dict, Any, List, Optional
+
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from transformers import pipeline
+import torch
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 class RAGChatbot:
-    def __init__(self, vector_store_path: str = "vectorstore", model_name: str = "distilgpt2"):
+    """
+    RAG Chatbot implementation using LangChain and FAISS.
+    """
+
+    def __init__(
+        self, 
+        vector_store_path: str = "vectorstore", 
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        llm_model: str = "distilgpt2"
+    ):
         """
-        Initializes the RAG chatbot by loading the vector store and setting up the LLM chain.
+        Initializes the RAG Chatbot.
+
+        Args:
+            vector_store_path: Path to the FAISS index directory.
+            model_name: Embedding model name.
+            llm_model: Lightweight LLM model for generation.
         """
         self.vector_store_path = vector_store_path
         self.model_name = model_name
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        
-        # Load vector store
-        if not os.path.exists(vector_store_path):
-            raise FileNotFoundError(f"Vector store not found at {vector_store_path}. Please run src/chunking_embedding.py first.")
-        
-        print(f"Loading vector store from {vector_store_path}...")
-        self.vector_db = FAISS.load_local(
-            vector_store_path, 
-            self.embeddings,
-            allow_dangerous_deserialization=True # Required for loading pickle-based FAISS local
-        )
-        
-        # Setup LLM
-        print(f"Initializing LLM ({model_name})...")
-        hf_pipeline = pipeline(
-            "text-generation",
-            model=model_name,
-            tokenizer=model_name,
-            max_new_tokens=150,
-            temperature=0.7,
-            top_p=0.9,
-            repetition_penalty=1.1,
-            pad_token_id=50256 # For distilgpt2
-        )
-        self.llm = HuggingFacePipeline(pipeline=hf_pipeline)
-        
-        # Setup Prompt Template
-        template = """
+        self.llm_model = llm_model
+        self.rag_chain = None
+        self.vector_db = None
+
+        self._setup_pipeline()
+
+    def _setup_pipeline(self) -> None:
+        """
+        Sets up the embedding model, vector store, and RAG chain.
+        """
+        try:
+            logger.info(f"Loading embedding model: {self.model_name}...")
+            embeddings = HuggingFaceEmbeddings(model_name=self.model_name)
+
+            if not os.path.exists(self.vector_store_path):
+                # Check for legacy path
+                legacy = "vector_store"
+                if os.path.exists(legacy):
+                    self.vector_store_path = legacy
+                    logger.info(f"Using legacy vector store path: {legacy}")
+                else:
+                    logger.error(f"Vector store directory not found: {self.vector_store_path}")
+                    return
+
+            logger.info(f"Loading vector store from {self.vector_store_path}...")
+            self.vector_db = FAISS.load_local(
+                self.vector_store_path, 
+                embeddings, 
+                allow_dangerous_deserialization=True
+            )
+
+            logger.info(f"Initializing LLM: {self.llm_model}...")
+            # Use GPU if available
+            device = 0 if torch.cuda.is_available() else -1
+            llm_pipeline = pipeline(
+                "text-generation",
+                model=self.llm_model,
+                device=device,
+                max_new_tokens=200,
+                temperature=0.7,
+                do_sample=True,
+                truncation=True
+            )
+            llm = HuggingFacePipeline(pipeline=llm_pipeline)
+
+            rag_prompt_template = PromptTemplate(
+                input_variables=["context", "question"],
+                template="""
 You are a financial analyst assistant at CrediTrust.
 Your task is to answer customer complaint-related questions using only the provided context.
-If the answer is not in the context, say that you don't know based on the provided information.
 
 Context:
 {context}
@@ -58,40 +104,66 @@ Question:
 
 Answer (based only on the context above):
 """
-        self.prompt = PromptTemplate(
-            input_variables=["context", "question"],
-            template=template
-        )
-        
-        # Setup RetrievalQA chain
-        self.rag_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            retriever=self.vector_db.as_retriever(search_kwargs={"k": 3}),
-            chain_type="stuff",
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": self.prompt}
-        )
+            )
+
+            logger.info("Setting up RetrievalQA chain...")
+            self.rag_chain = RetrievalQA.from_chain_type(
+                llm=llm,
+                retriever=self.vector_db.as_retriever(search_kwargs={"k": 3}),
+                chain_type="stuff",
+                chain_type_kwargs={"prompt": rag_prompt_template},
+                return_source_documents=True
+            )
+            logger.info("RAG pipeline setup successful.")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG pipeline: {e}")
 
     def ask(self, query: str) -> Dict[str, Any]:
         """
-        Queries the RAG pipeline.
+        Asks a question to the chatbot.
+
+        Args:
+            query: The user's question.
+
+        Returns:
+            Dict[str, Any]: Contains 'answer' and 'sources'.
         """
-        response = self.rag_chain({"query": query})
-        return {
-            "answer": response["result"],
-            "source_documents": response["source_documents"]
-        }
+        if not self.rag_chain:
+            return {
+                "answer": "Error: RAG pipeline is not initialized. Please ensure the vector store exists.",
+                "sources": []
+            }
+
+        try:
+            logger.info(f"Processing query: {query}")
+            result = self.rag_chain.invoke({"query": query})
+            
+            answer = result.get("result", "No answer generated.")
+            source_docs = result.get("source_documents", [])
+            
+            sources = [
+                {
+                    "content": doc.page_content,
+                    "metadata": doc.metadata
+                } for doc in source_docs
+            ]
+
+            return {
+                "answer": answer,
+                "sources": sources
+            }
+        except Exception as e:
+            logger.error(f"Error during query processing: {e}")
+            return {
+                "answer": f"Error: {e}",
+                "sources": []
+            }
 
 if __name__ == "__main__":
-    # Quick test if run as script
-    try:
-        bot = RAGChatbot()
-        test_query = "What are the common issues with credit reporting?"
-        result = bot.ask(test_query)
-        print(f"\nQuery: {test_query}")
-        print(f"Answer: {result['answer']}")
-        print("\nSources:")
-        for doc in result["source_documents"]:
-            print(f"- {doc.page_content[:100]}...")
-    except Exception as e:
-        print(f"Error: {e}")
+    # Quick CLI test
+    bot = RAGChatbot()
+    test_query = "What common complaints exist about credit cards?"
+    response = bot.ask(test_query)
+    print(f"\nQ: {test_query}\nA: {response['answer']}\n")
+    print(f"Sources retrieved: {len(response['sources'])}")

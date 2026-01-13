@@ -42,51 +42,54 @@ def build_faiss_index(embedding_matrix: np.ndarray) -> faiss.IndexFlatL2:
 	return index
 
 
-def save_vector_store(index: faiss.IndexFlatL2, metadata: List[Dict[str, Any]], chunks: List[str], out_dir: str = "vectorstore") -> None:
-	"""Save the FAISS index and metadata. For compatibility, write to both
-	`vectorstore/` (rubric) and `vector_store/` (existing notebooks).
-	"""
-	# primary dir per rubric
-	os.makedirs(out_dir, exist_ok=True)
-	faiss.write_index(index, os.path.join(out_dir, "complaint_index.faiss"))
-	with open(os.path.join(out_dir, "metadata.pkl"), "wb") as f:
-		pickle.dump(metadata, f)
-	with open(os.path.join(out_dir, "chunks.pkl"), "wb") as f:
-		pickle.dump(chunks, f)
+def save_vector_store(chunks: List[str], metadata: List[Dict[str, Any]], out_dir: str = "vectorstore") -> None:
+    """
+    Saves the chunks and metadata using LangChain's FAISS wrapper for easy loading in the chatbot.
+    """
+    from langchain.vectorstores import FAISS
+    from langchain.embeddings import HuggingFaceEmbeddings
+    
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vector_db = FAISS.from_texts(chunks, embeddings, metadatas=metadata)
+    
+    # Save to primary dir
+    os.makedirs(out_dir, exist_ok=True)
+    vector_db.save_local(out_dir)
+    print(f"Saved FAISS index to {out_dir}/")
 
-	# also write to legacy path for compatibility
-	legacy = "vector_store"
-	os.makedirs(legacy, exist_ok=True)
-	faiss.write_index(index, os.path.join(legacy, "complaint_index.faiss"))
-	with open(os.path.join(legacy, "metadata.pkl"), "wb") as f:
-		pickle.dump(metadata, f)
-	with open(os.path.join(legacy, "chunks.pkl"), "wb") as f:
-		pickle.dump(chunks, f)
-
+    # Also save to legacy path for notebook compatibility
+    legacy = "vector_store"
+    os.makedirs(legacy, exist_ok=True)
+    vector_db.save_local(legacy)
+    print(f"Saved FAISS index to {legacy}/")
 
 if __name__ == "__main__":
-	# convenience CLI: look for filtered CSV then build index
-	import pandas as pd
+    # convenience CLI: look for filtered CSV then build index
+    import pandas as pd
 
-	filtered_path = os.path.join("data", "filtered_complaints_sampled.csv")
-	if not os.path.exists(filtered_path):
-		filtered_path = os.path.join("data", "filtered_complaints.csv")
-	if not os.path.exists(filtered_path):
-		raise FileNotFoundError("Place filtered CSV at data/filtered_complaints.csv or filtered_complaints_sampled.csv first.")
+    filtered_path = os.path.join("data", "filtered_complaints_sampled.csv")
+    if not os.path.exists(filtered_path):
+        filtered_path = os.path.join("data", "filtered_complaints.csv")
+    if not os.path.exists(filtered_path):
+        raise FileNotFoundError("Place filtered CSV at data/filtered_complaints.csv or filtered_complaints_sampled.csv first.")
 
-	df = pd.read_csv(filtered_path)
-	if "Cleaned_Narrative" not in df.columns:
-		raise ValueError("Filtered CSV must contain column 'Cleaned_Narrative'")
+    df = pd.read_csv(filtered_path)
+    if "Cleaned_Narrative" not in df.columns:
+        raise ValueError("Filtered CSV must contain column 'Cleaned_Narrative'")
 
-	all_chunks = []
-	metadata = []
-	for idx, row in df.reset_index().iterrows():
-		chunks = chunk_documents([row["Cleaned_Narrative"]])
-		all_chunks.extend(chunks)
-		metadata.extend([{"product": row.get("Product"), "complaint_id": row.get("Complaint ID"), "original_index": int(row.get("index", idx))}] * len(chunks))
+    all_chunks = []
+    metadata = []
+    
+    # Simple chunking for demo purposes
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
 
-	embeddings = build_embeddings(all_chunks)
-	index = build_faiss_index(embeddings)
-	save_vector_store(index, metadata, all_chunks, out_dir="vectorstore")
-	print(f"Saved FAISS index and metadata to vectorstore/ and vector_store/")
+    for idx, row in df.reset_index().iterrows():
+        text = str(row["Cleaned_Narrative"])
+        chunks = text_splitter.split_text(text)
+        all_chunks.extend(chunks)
+        metadata.extend([{"product": row.get("Product"), "complaint_id": row.get("Complaint ID")}] * len(chunks))
+
+    save_vector_store(all_chunks, metadata, out_dir="vectorstore")
+    print(f"Successfully built and saved vector store artifacts.")
 
